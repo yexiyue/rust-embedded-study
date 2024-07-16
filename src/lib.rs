@@ -3,7 +3,6 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 
-pub mod server;
 // 导入与WiFi相关的模块，用于后续的WiFi配置和服务。
 pub mod wifi;
 pub mod led;

@@ -22,6 +22,5 @@ CRATE_CC_NO_DEFAULTS = "1"
 # 添加如下内容
 # ESP-IDF 框架工具的安装位置。（这里使用的全局，后面项目就不用再下载依赖了）
 ESP_IDF_TOOLS_INSTALL_DIR = { value = "global" }
-
 # ESP-IDF 框架的 Git 仓库地址。（这里使用了代理）
 # ESP_IDF_REPOSITORY = "https://mirror.ghproxy.com/https://github.com/espressif/esp-idf.git"
