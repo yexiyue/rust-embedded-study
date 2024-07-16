@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd web
-          pnpm install
+          pnpm install --no-frozen-lockfile
       - name: Build
         run: |
           cd web
