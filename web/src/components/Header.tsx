@@ -16,6 +16,12 @@ export const Header = () => {
       <p className="md:absolute md:left-4 md:text-xl">Rust Embedded Study</p>
       <div className="hidden md:flex md:gap-4 md:text-2xl">
         <NavLink
+          to="/"
+          className={({ isActive }) => (isActive ? " text-blue-500" : "")}
+        >
+          bt
+        </NavLink>
+        <NavLink
           to="/http"
           className={({ isActive }) => (isActive ? " text-blue-500" : "")}
         >

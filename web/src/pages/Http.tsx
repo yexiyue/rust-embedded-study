@@ -1,17 +1,14 @@
-import { App, Button, ColorPicker, Input, Space } from "antd";
+import { App, Button, ColorPicker, Space } from "antd";
 import { Color } from "antd/es/color-picker";
 import { useState } from "react";
-import { useStore } from "../store";
 
 export const Http = () => {
   const [color, setColor] = useState<Color>();
-  const [staId, setStaIp] = useStore((store) => [store.staIp, store.setStaIp]);
+
   const { message } = App.useApp();
   return (
     <div className="w-full h-full p-4 flex justify-center">
       <div className="md:w-[400px] w-[200px] flex flex-col gap-2">
-        <p className="text-[18px]">设置sta ip</p>
-        <Input value={staId} onChange={(e) => setStaIp(e.target.value)} />
         <p className="text-[18px]">设置颜色值</p>
         <div>
           <ColorPicker
@@ -29,12 +26,11 @@ export const Http = () => {
               type="primary"
               onClick={async () => {
                 try {
-                  const res = await fetch(`http://${staId}/set-color`, {
+                  const res = await fetch(`/set-color`, {
                     method: "post",
                     headers: {
                       "Context-Type": "application/json",
                     },
-                    mode: "no-cors",
                     body: JSON.stringify({
                       color: color
                         ? {
@@ -59,9 +55,7 @@ export const Http = () => {
               type="primary"
               onClick={async () => {
                 try {
-                  const res = await fetch(`http://${staId}/shutdown`, {
-                    mode: "no-cors",
-                  });
+                  const res = await fetch(`/shutdown`);
                   if (res.status === 200) {
                     message.success("关灯成功");
                   }

@@ -17,6 +17,7 @@
     "react-dom": "^18.3.1",
     "react-router": "^6.24.1",
     "react-router-dom": "^6.24.1",
+    "vite-plugin-singlefile": "^2.0.2",
     "zustand": "^4.5.4"
   },
   "devDependencies": {
