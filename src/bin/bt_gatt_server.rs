@@ -1,21 +1,21 @@
-//! 示例展示了使用ESP IDF Bluedroid BLE绑定的BLE GATT服务器。
-//! 当前情况下，使用`--features experimental`进行构建。
+//! Example of a BLE GATT server using the ESP IDF Bluedroid BLE bindings.
+//! Build with `--features experimental` (for now).
 //!
-//! 可以通过任何"GATT浏览器"应用进行测试，例如：
-//! 在Android上可用的"GATTBrowser"移动应用。
+//! You can test it with any "GATT Browser" app, like e.g.
+//! the "GATTBrowser" mobile app available on Android.
 //!
-//! 示例服务器发布了一个单一的服务，其中包含两个特性：
-//! - 一个"接收"特性，客户端可以向其写入数据
-//! - 一个"指示"特性，客户端可以订阅并从其接收指示
+//! The example server publishes a single service featuring two characteristics:
+//! - A "recv" characteristic that clients can write to
+//! - An "indicate" characteristic that clients can subscribe to and receive indications from
 //!
-//! 示例相对复杂，因为它不仅展示了如何从客户端接收数据，
-//! 还演示了如何向订阅了特性的所有客户端广播数据，包括
-//! 处理指示确认的过程。
+//! The example is relatively sophisticated as it demonstrates not only how to receive data from clients
+//! but also how to broadcast data to all clients that have subscribed to a characteristic, including
+//! handling indication confirmations.
 //!
-//! 注意Bluedroid堆栈消耗大量内存，因此`sdkconfig.defaults`应仔细配置
-//! 以避免内存不足的问题。
+//! Note that the Buedroid stack consumes a lot of memory, so `sdkconfig.defaults` should be carefully configured
+//! to avoid running out of memory.
 //!
-//! 下面是一个可行的配置示例，但你可能需要根据具体的应用场景做进一步调整：
+//! Here's a working configuration, but you might need to adjust further to your concrete use-case:
 //!
 //! CONFIG_BT_ENABLED=y
 //! CONFIG_BT_BLUEDROID_ENABLED=y
@@ -31,6 +31,7 @@
 use std::sync::{ Arc, Condvar, Mutex };
 
 use enumset::enum_set;
+
 use esp_idf_svc::bt::ble::gap::{ AdvConfiguration, BleGapEvent, EspBleGap };
 use esp_idf_svc::bt::ble::gatt::server::{ ConnectionId, EspGatts, GattsEvent, TransferId };
 use esp_idf_svc::bt::ble::gatt::{
@@ -55,7 +56,7 @@ use esp_idf_svc::sys::{ EspError, ESP_FAIL };
 
 use log::{ info, warn };
 
-fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
 
@@ -104,17 +105,17 @@ fn main() -> anyhow::Result<()> {
 const APP_ID: u16 = 0;
 const MAX_CONNECTIONS: usize = 2;
 
-// 我们的服务UUID
+// Our service UUID
 pub const SERVICE_UUID: u128 = 0xad91b201734740479e173bed82d75f9d;
 
-/// 我们的"接收"特性 —— 即客户端可以发送数据的地方。
+/// Our "recv" characteristic - i.e. where clients can send data.
 pub const RECV_CHARACTERISTIC_UUID: u128 = 0xb6fccb5087be44f3ae22f85485ea42c4;
-/// 我们的"指示"特性 —— 即客户端若订阅，则可接收数据。
+/// Our "indicate" characteristic - i.e. where clients can receive data if they subscribe to it
 pub const IND_CHARACTERISTIC_UUID: u128 = 0x503de214868246c4828fd59144da41be;
 
-// 为了在下面的各个函数中获得更短的类型签名，将这些类型按照示例中的用法命名。
-// 注意到，除了使用`Arc`之外，你也可以使用常规引用，但是那样你就得处理生命周期问题，
-// 并且下面的签名将不会是`'static`。
+// Name the types as they are used in the example to get shorter type signatures in the various functions below.
+// note that - rather than `Arc`s, you can use regular references as well, but then you have to deal with lifetimes
+// and the signatures below will not be `'static`.
 type ExBtDriver = BtDriver<'static, Ble>;
 type ExEspBleGap = Arc<EspBleGap<'static, Ble, Arc<ExBtDriver>>>;
 type ExEspGatts = Arc<EspGatts<'static, Ble, Arc<ExBtDriver>>>;
@@ -159,31 +160,35 @@ impl ExampleServer {
 }
 
 impl ExampleServer {
-    /// 向所有当前订阅我们指示特性的对等方发送（指示）数据。
+    /// Send (indicate) data to all peers that are currently
+    /// subscribed to our indication characteristic
     ///
-    /// 使用Mutex + Condvar等待接收到指示确认。
+    /// Uses a Mutex + Condvar to wait until indication confirmation
+    /// is received.
     ///
-    /// 这种复杂性仅在使用指示时是必要的。
-    /// 通知实际上不发送确认，因此不需要这种同步。
+    /// This complexity is necessary only when using indications.
+    /// Notifications do not really send confirmation and thus do not
+    /// need this synchronization.
     fn indicate(&self, data: &[u8]) -> Result<(), EspError> {
         for peer_index in 0..MAX_CONNECTIONS {
-            // 将此数据传播给所有已连接并且订阅了我们指示特性的客户端
+            // Propagate this data to all clients which are connected
+            // and have subscribed to our indication characteristic
 
             let mut state = self.state.lock().unwrap();
 
             loop {
                 if state.connections.len() <= peer_index {
-                    // 我们已经向所有已连接的客户端发送了数据
+                    // We've send to everybody who is connected
                     break;
                 }
 
                 let Some(gatt_if) = state.gatt_if else {
-                    // 我们在此期间丢失了gatt接口
+                    // We lost the gatt interface in the meantime
                     break;
                 };
 
                 let Some(ind_handle) = state.ind_handle else {
-                    // 我们在此期间丢失了指示句柄
+                    // We lost the indication handle in the meantime
                     break;
                 };
 
@@ -195,7 +200,7 @@ impl ExampleServer {
                     state.ind_confirmed = Some(conn.peer);
                     let conn = &state.connections[peer_index];
 
-                    info!("向 {} 指示数据", conn.peer);
+                    info!("Indicated data to {}", conn.peer);
                     break;
                 } else {
                     state = self.condvar.wait(state).unwrap();
@@ -206,37 +211,38 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 用户代码可以处理新订阅客户端的示例回调。
+    /// Sample callback where the user code can handle a newly-subscribed client
     ///
-    /// 如果用户代码只是向所有订阅的客户端广播相同的指示，
-    /// 此回调可能没有必要。
+    /// If the user code just broadcasts the _same_ indication to all subscribed
+    /// clients, this callback might not be necessary.
     fn on_subscribed(&self, addr: BdAddr) {
-        // 在这里放置您的自定义代码或留空
-        // `indicate()` 无论如何会向所有已连接的客户端发送
-        warn!("客户端 {} 订阅 - 在这里放置您的自定义逻辑", addr);
-    }
-    /// 用户代码可以处理取消订阅客户端的示例回调。
-    ///
-    /// 如果用户代码只是向所有订阅的客户端广播相同的指示，
-    /// 此回调可能没有必要。
-    fn on_unsubscribed(&self, addr: BdAddr) {
-        // 在这里放置您的自定义代码
-        // `indicate()` 无论如何会向所有已连接的客户端发送
-        warn!("客户端 {addr} 取消订阅 - 在这里放置您的自定义逻辑");
+        // Put your custom code here or leave empty
+        // `indicate()` will anyway send to all connected clients
+        warn!("Client {addr} subscribed - put your custom logic here");
     }
 
-    /// 用户代码可以处理接收到数据的示例回调
-    /// 为了演示目的，数据只是被记录下来。
+    /// Sample callback where the user code can handle an unsubscribed client
+    ///
+    /// If the user code just broadcasts the _same_ indication to all subscribed
+    /// clients, this callback might not be necessary.
+    fn on_unsubscribed(&self, addr: BdAddr) {
+        // Put your custom code here
+        // `indicate()` will anyway send to all connected clients
+        warn!("Client {addr} unsubscribed - put your custom logic here");
+    }
+
+    /// Sample callback where the user code can handle received data
+    /// For demo purposes, the data is just logged.
     fn on_recv(&self, addr: BdAddr, data: &[u8], offset: u16, mtu: Option<u16>) {
-        // 在这里放置您的自定义代码
+        // Put your custom code here
         warn!(
-            "从 {addr} 接收到数据: {data:?}, 偏移量: {offset}, 最大传输单元: {mtu:?} - 在这里放置您的自定义逻辑"
+            "Received data from {addr}: {data:?}, offset: {offset}, mtu: {mtu:?} - put your custom logic here"
         );
     }
 
-    /// GAP事件的主要事件处理器
+    /// The main event handler for the GAP events
     fn on_gap_event(&self, event: BleGapEvent) -> Result<(), EspError> {
-        info!("接收到事件: {event:?}");
+        info!("Got event: {event:?}");
 
         if let BleGapEvent::AdvertisingConfigured(status) = event {
             self.check_bt_status(status)?;
@@ -246,7 +252,7 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// GATTS事件的主要事件处理器
+    /// The main event handler for the GATTS events
     fn on_gatts_event(&self, gatt_if: GattInterface, event: GattsEvent) -> Result<(), EspError> {
         info!("Got event: {event:?}");
 
@@ -263,7 +269,6 @@ impl ExampleServer {
             }
             GattsEvent::CharacteristicAdded { status, attr_handle, service_handle, char_uuid } => {
                 self.check_gatt_status(status)?;
-
                 self.register_characteristic(service_handle, attr_handle, char_uuid)?;
             }
             GattsEvent::DescriptorAdded { status, attr_handle, service_handle, descr_uuid } => {
@@ -332,8 +337,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 创建服务并开始广播
-    /// 当收到通知 GATTS 应用程序已注册时，在事件回调中调用
+    /// Create the service and start advertising
+    /// Called from within the event callback once we are notified that the GATTS app is registered
     fn create_service(&self, gatt_if: GattInterface) -> Result<(), EspError> {
         self.state.lock().unwrap().gatt_if = Some(gatt_if);
 
@@ -344,8 +349,8 @@ impl ExampleServer {
                 include_txpower: true,
                 flag: 2,
                 service_uuid: Some(BtUuid::uuid128(SERVICE_UUID)),
-                // service_data: todo!(), // 服务数据: 待办事项
-                // manufacturer_data: todo!(), // 制造商数据: 待办事项
+                // service_data: todo!(),
+                // manufacturer_data: todo!(),
                 ..Default::default()
             })
         )?;
@@ -364,8 +369,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 删除服务
-    /// 在收到 GATTS 应用已被删除的通知后，从事件回调内部调用
+    /// Delete the service
+    /// Called from within the event callback once we are notified that the GATTS app is deleted
     fn delete_service(&self, service_handle: Handle) -> Result<(), EspError> {
         let mut state = self.state.lock().unwrap();
 
@@ -378,8 +383,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 注销服务
-    /// 在收到 GATTS 应用已被注销的通知后，从事件回调内部调用
+    /// Unregister the service
+    /// Called from within the event callback once we are notified that the GATTS app is unregistered
     fn unregister_service(&self, service_handle: Handle) -> Result<(), EspError> {
         let mut state = self.state.lock().unwrap();
 
@@ -391,8 +396,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 配置并启动服务
-    /// 在收到服务创建的通知后，从事件回调内部调用
+    /// Configure and start the service
+    /// Called from within the event callback once we are notified that the service is created
     fn configure_and_start_service(&self, service_handle: Handle) -> Result<(), EspError> {
         self.state.lock().unwrap().service_handle = Some(service_handle);
 
@@ -402,9 +407,21 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 向服务添加我们的两个特性
-    /// 在收到服务创建的通知后，从事件回调内部调用
+    /// Add our two characteristics to the service
+    /// Called from within the event callback once we are notified that the service is created
     fn add_characteristics(&self, service_handle: Handle) -> Result<(), EspError> {
+        self.gatts.add_characteristic(
+            service_handle,
+            &(GattCharacteristic {
+                uuid: BtUuid::uuid128(IND_CHARACTERISTIC_UUID),
+                permissions: enum_set!(Permission::Write | Permission::Read),
+                properties: enum_set!(Property::Indicate),
+                max_len: 200, // Mac iondicate data
+                auto_rsp: AutoResponse::ByApp,
+            }),
+            &[]
+        )?;
+
         self.gatts.add_characteristic(
             service_handle,
             &(GattCharacteristic {
@@ -417,24 +434,12 @@ impl ExampleServer {
             &[]
         )?;
 
-        self.gatts.add_characteristic(
-            service_handle,
-            &(GattCharacteristic {
-                uuid: BtUuid::uuid128(IND_CHARACTERISTIC_UUID),
-                permissions: enum_set!(Permission::Write | Permission::Read),
-                properties: enum_set!(Property::Indicate),
-                max_len: 400, // Mac iondicate data
-                auto_rsp: AutoResponse::ByApp,
-            }),
-            &[]
-        )?;
-
         Ok(())
     }
 
-    /// 添加 CCCD 描述符
-    /// 在收到特征描述符被添加的通知后，从事件回调内部调用，
-    /// 但是仅当添加的特征是“指示”特性时，此方法才会执行某些操作
+    /// Add the CCCD descriptor
+    /// Called from within the event callback once we are notified that a char descriptor is added,
+    /// however the method will do something only if the added char is the "indicate" characteristics of course
     fn register_characteristic(
         &self,
         service_handle: Handle,
@@ -472,8 +477,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 注册 CCCD 描述符
-    /// 在收到描述符被添加的通知后，从事件回调内部调用
+    /// Register the CCCD descriptor
+    /// Called from within the event callback once we are notified that a descriptor is added,
     fn register_cccd_descriptor(
         &self,
         service_handle: Handle,
@@ -492,8 +497,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 接收客户端的数据
-    /// 在接收到连接 MTU 的通知后，从事件回调内部调用
+    /// Receive data from a client
+    /// Called from within the event callback once we are notified for the connection MTU
     fn register_conn_mtu(&self, conn_id: ConnectionId, mtu: u16) -> Result<(), EspError> {
         let mut state = self.state.lock().unwrap();
 
@@ -504,8 +509,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 建立新连接
-    /// 在接收到新连接的通知后，从事件回调内部调用
+    /// Create a new connection
+    /// Called from within the event callback once we are notified for a new connection
     fn create_conn(&self, conn_id: ConnectionId, addr: BdAddr) -> Result<(), EspError> {
         let added = {
             let mut state = self.state.lock().unwrap();
@@ -534,8 +539,8 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 删除一个连接
-    /// 当我们接收到断开连接的对等方的通知时，在事件回调内部调用
+    /// Delete a connection
+    /// Called from within the event callback once we are notified for a disconnected peer
     fn delete_conn(&self, addr: BdAddr) -> Result<(), EspError> {
         let mut state = self.state.lock().unwrap();
 
@@ -550,7 +555,7 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 处理客户端向我们发送到 "recv" 特性的数据的辅助方法
+    /// A helper method to process a client sending us data to the "recv" characteristic
     #[allow(clippy::too_many_arguments)]
     fn recv(
         &self,
@@ -574,7 +579,7 @@ impl ExampleServer {
         };
 
         if Some(handle) == ind_cccd_handle {
-            // 订阅或取消订阅我们的指示特性
+            // Subscribe or unsubscribe to our indication characteristic
 
             if offset == 0 && value.len() == 2 {
                 let value = u16::from_le_bytes([value[0], value[1]]);
@@ -589,7 +594,7 @@ impl ExampleServer {
                 }
             }
         } else if Some(handle) == recv_handle {
-            // 在 recv 特性上接收数据
+            // Receive data on the recv characteristic
 
             self.on_recv(addr, value, offset, conn.mtu);
         } else {
@@ -599,10 +604,11 @@ impl ExampleServer {
         Ok(true)
     }
 
-    /// 一个辅助方法，用于向刚刚通过 "recv" 特性向我们发送数据的对等方发送响应。
+    /// A helper method that sends a response to the peer that just sent us some data on the "recv"
+    /// characteristic.
     ///
-    /// 这是必要的，因为我们支持写入确认
-    /// （与未确认写入相比，这是一个更复杂的情况）。
+    /// This is only necessary, because we support write confirmation
+    /// (which is the more complex case as compared to unconfirmed writes).
     #[allow(clippy::too_many_arguments)]
     fn send_write_response(
         &self,
@@ -643,17 +649,18 @@ impl ExampleServer {
         Ok(())
     }
 
-    /// 一个辅助方法来处理指示确认。
-    /// 基本上，我们需要通知 "indicate" 方法发送的指示已被确认，
-    /// 因此它可以自由地发送下一个指示。
+    /// A helper method to handle an indication conrimation.
+    /// Basically, we need to notify the "indicate" method that sending the indication was
+    /// confirmed, so that it is free to send the next indication.
     fn confirm_indication(&self) -> Result<(), EspError> {
         let mut state = self.state.lock().unwrap();
         if state.ind_confirmed.is_none() {
-            // 不应该发生：意味着我们收到了一个我们未发送的指示的确认。
+            // Should not happen: means we have received a confirmation for
+            // an indication we did not send.
             unreachable!();
         }
 
-        state.ind_confirmed = None; // 以便主循环可以发送下一个指示
+        state.ind_confirmed = None; // So that the main loop can send the next indication
         self.condvar.notify_all();
 
         Ok(())

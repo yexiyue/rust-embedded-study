@@ -4,6 +4,7 @@ use esp_idf_svc::bt::{
         gap::{ AdvConfiguration, BleGapEvent },
         gatt::{
             server::{ ConnectionId, GattsEvent, TransferId },
+            GattConnParams,
             GattInterface,
             GattResponse,
             GattServiceId,
@@ -15,13 +16,19 @@ use esp_idf_svc::bt::{
     BtStatus,
     BtUuid,
 };
-use std::{ collections::HashMap, hash::Hash, sync::{ Arc, Mutex } };
+use std::{
+    collections::{ HashMap, HashSet },
+    fmt::Debug,
+    hash::Hash,
+    ops::Deref,
+    sync::{ Arc, Condvar, Mutex },
+};
 use super::{ app_builder::BLEAppBuilder, ExEspBleGap, ExEspGatts, ReadExt, Service, WriteExt };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub peer: BdAddr,
-    pub conn_id: Handle,
+    pub conn_id: ConnectionId,
     pub mtu: Option<u16>,
 }
 
@@ -31,6 +38,7 @@ pub struct ConnectedState {
     pub gatt_if: Option<GattInterface>,
     pub service_handle_map: HashMap<Handle, HashBtUuid>,
     pub attr_handle_map: HashMap<Handle, HashBtUuid>,
+    pub notify_confirmed: Option<BdAddr>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -39,6 +47,20 @@ pub struct HashBtUuid(pub BtUuid);
 impl Hash for HashBtUuid {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         state.write(self.0.as_bytes())
+    }
+}
+
+impl PartialEq<BtUuid> for HashBtUuid {
+    fn eq(&self, other: &BtUuid) -> bool {
+        self.0 == *other
+    }
+}
+
+impl Deref for HashBtUuid {
+    type Target = BtUuid;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -60,6 +82,7 @@ pub struct BLEApp<'a, State: Sync + Send + Clone = ()> {
     pub read_characteristics: HashMap<HashBtUuid, Arc<dyn ReadExt<State = State>>>,
     pub write_characteristics: HashMap<HashBtUuid, Arc<dyn WriteExt<State = State>>>,
     pub connected_state: Arc<Mutex<ConnectedState>>,
+    condvar: Arc<Condvar>,
 }
 
 impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
@@ -86,6 +109,7 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
             connected_state: Arc::new(Mutex::new(ConnectedState::default())),
             adv_configuration,
             device_name,
+            condvar: Arc::new(Condvar::new()),
         }
     }
 
@@ -128,41 +152,60 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
         let mut connected_state = self.connected_state.lock().unwrap();
         connected_state.service_handle_map.insert(service_handle, hash_bt_uuid);
         // 添加特征
-        for i in &service.read_characteristics {
-            let characteristic = i.characteristic();
-            self.gatts.add_characteristic(service_handle, &characteristic, &[])?;
-        }
+        let mut uuids: HashSet<HashBtUuid> = HashSet::new();
+
         for i in &service.write_characteristics {
             let characteristic = i.characteristic();
-            self.gatts.add_characteristic(service_handle, &characteristic, &[])?;
+            if uuids.insert(i.characteristic().uuid.into()) {
+                self.gatts.add_characteristic(service_handle, &characteristic, &[])?;
+            }
         }
+
+        for i in &service.read_characteristics {
+            let characteristic = i.characteristic();
+            if uuids.insert(i.characteristic().uuid.into()) {
+                self.gatts.add_characteristic(service_handle, &characteristic, &[])?;
+            }
+        }
+
         Ok(())
     }
 
     // 在添加特征完成后，可以拿到attr_handle,这时候做好映射就OK
-    // todo 添加descriptor
     fn on_characteristic_added(
         &self,
         attr_handle: Handle,
+        service_handle: Handle,
         char_uuid: BtUuid
     ) -> anyhow::Result<()> {
-        let mut connected_state = self.connected_state.lock().unwrap();
-        connected_state.attr_handle_map.insert(attr_handle, char_uuid.into());
+        let hash_uuid: HashBtUuid = char_uuid.into();
 
+        let descriptors = if let Some(c) = self.read_characteristics.get(&hash_uuid) {
+            c.descriptors()
+        } else if let Some(c) = self.write_characteristics.get(&hash_uuid) {
+            c.descriptors()
+        } else {
+            bail!("No characteristic found for uuid {:?}", hash_uuid)
+        };
+        let mut connected_state = self.connected_state.lock().unwrap();
+        connected_state.attr_handle_map.insert(attr_handle, hash_uuid.clone());
+        for i in descriptors {
+            self.gatts.add_descriptor(service_handle, &i)?;
+        }
         Ok(())
     }
 
     fn on_write(&self, attr_handle: Handle, value: &[u8]) -> anyhow::Result<()> {
         let connect_state = self.connected_state.lock().unwrap();
-        let uuid = connect_state.attr_handle_map
-            .get(&attr_handle)
-            .ok_or(anyhow!("attr_handle not found"))?;
+        if let Some(uuid) = connect_state.attr_handle_map.get(&attr_handle) {
+            let Some(characteristic) = self.write_characteristics.get(uuid) else {
+                bail!("characteristic not found")
+            };
 
-        let Some(characteristic) = self.write_characteristics.get(uuid) else {
-            bail!("characteristic not found")
-        };
+            characteristic.on_write(self.state.clone(), value)?;
+        }
 
-        characteristic.on_write(self.state.clone(), value)
+        Ok(())
     }
 
     fn on_read(&self, attr_handle: Handle) -> anyhow::Result<&[u8]> {
@@ -174,6 +217,22 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
             bail!("characteristic not found")
         };
         characteristic.on_read(self.state.clone())
+    }
+
+    fn on_peer_connected(
+        &self,
+        conn_id: ConnectionId,
+        addr: BdAddr,
+        GattConnParams { .. }: GattConnParams
+    ) -> anyhow::Result<()> {
+        let mut connected_state = self.connected_state.lock().unwrap();
+        connected_state.connections.push(Connection {
+            peer: addr,
+            conn_id,
+            mtu: None,
+        });
+        self.gap.set_conn_params_conf(addr, 10, 20, 0, 400)?;
+        Ok(())
     }
 
     pub(crate) fn on_gap_event(&self, event: BleGapEvent) -> anyhow::Result<()> {
@@ -204,9 +263,9 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
                 self.gatts.start_service(service_handle)?;
                 self.on_service_created(service_handle, service_id)?;
             }
-            GattsEvent::CharacteristicAdded { status, attr_handle, char_uuid, .. } => {
+            GattsEvent::CharacteristicAdded { status, attr_handle, char_uuid, service_handle } => {
                 self.check_gatt_status(status)?;
-                self.on_characteristic_added(attr_handle, char_uuid)?;
+                self.on_characteristic_added(attr_handle, service_handle, char_uuid)?;
             }
             GattsEvent::Write {
                 conn_id,
@@ -218,7 +277,7 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
                 is_prep,
                 value,
             } => {
-                log::info!("{addr:?} write  conn_id:{:?} value:{:?}", conn_id, value);
+                log::warn!("{addr:?} write  conn_id:{:?} value:{:?}", conn_id, value);
                 self.send_write_response(
                     gatt_if,
                     conn_id,
@@ -250,6 +309,13 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
                         Some(&response)
                     )?;
                 }
+            }
+            GattsEvent::PeerConnected { conn_id, addr, conn_params, .. } => {
+                self.on_peer_connected(conn_id, addr, conn_params)?;
+            }
+            GattsEvent::Confirm { status, .. } => {
+                self.check_gatt_status(status)?;
+                self.confirm_notify()?;
             }
             _ => {}
         }
@@ -302,5 +368,49 @@ impl<'a, T: Sync + Send + Clone> BLEApp<'a, T> {
         } else {
             bail!("GattStatus error:{:?}", status)
         }
+    }
+
+    pub fn notify<F>(&self, char_uuid: &BtUuid, f: F) -> anyhow::Result<()>
+        where F: Fn(&[Connection], T) -> anyhow::Result<Vec<(&Connection, &[u8])>>
+    {
+        let mut connected_state = self.connected_state.lock().unwrap();
+        let gatts_if = connected_state.gatt_if.ok_or(anyhow!("gatt_if not found"))?;
+        let attr_handle = connected_state.attr_handle_map
+            .iter()
+            .find_map(|(attr_handle, uuid)| (
+                if uuid == char_uuid {
+                    Some(*attr_handle)
+                } else {
+                    None
+                }
+            ))
+            .ok_or(anyhow!("attr_handle not found"))?;
+        let connections = connected_state.connections.clone();
+        let connect_data = f(&connections, self.state.clone())?;
+
+        for (conn, data) in connect_data {
+            log::warn!("notify conn:{:?} data:{:?}", conn, data);
+            if connected_state.notify_confirmed.is_none() {
+                self.gatts.notify(gatts_if, conn.conn_id, attr_handle, data)?;
+                connected_state.notify_confirmed = Some(conn.peer);
+            } else {
+                connected_state = self.condvar.wait(connected_state).unwrap();
+            }
+        }
+
+        Ok(())
+    }
+
+    fn confirm_notify(&self) -> anyhow::Result<()> {
+        let mut state = self.connected_state.lock().unwrap();
+        if state.notify_confirmed.is_none() {
+            // 不应该发生：意味着我们收到了一个我们未发送的指示的确认。
+            unreachable!();
+        }
+
+        state.notify_confirmed = None; // 以便主循环可以发送下一个指示
+        self.condvar.notify_all();
+
+        Ok(())
     }
 }

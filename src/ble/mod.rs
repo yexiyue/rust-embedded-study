@@ -1,5 +1,5 @@
 use esp_idf_svc::bt::{
-    ble::{ gap::EspBleGap, gatt::{ server::EspGatts, GattCharacteristic } },
+    ble::{ gap::EspBleGap, gatt::{ server::EspGatts, GattCharacteristic, GattDescriptor } },
     Ble,
     BtDriver,
 };
@@ -17,6 +17,9 @@ type ExEspGatts<'a> = Arc<EspGatts<'a, Ble, Arc<ExBtDriver<'a>>>>;
 
 pub trait CharacteristicExt: Debug + Sync + Send {
     fn characteristic(&self) -> GattCharacteristic;
+    fn descriptors(&self) -> Vec<GattDescriptor> {
+        vec![]
+    }
 }
 
 pub trait ReadExt: CharacteristicExt {
@@ -27,6 +30,12 @@ pub trait ReadExt: CharacteristicExt {
 pub trait WriteExt: CharacteristicExt {
     type State: Sync + Send + Clone;
     fn on_write(&self, state: Self::State, data: &[u8]) -> anyhow::Result<()>;
+}
+
+pub trait NotifyExt: CharacteristicExt {
+    type State: Sync + Send + Clone;
+    fn on_subscribe(&self, state: Self::State) -> anyhow::Result<()>;
+    fn on_unsubscribe(&self, state: Self::State) -> anyhow::Result<()>;
 }
 
 pub fn start<State: Send + Sync + Clone + 'static>(
