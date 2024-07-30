@@ -6,7 +6,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 // 导入与WiFi相关的模块，用于后续的WiFi配置和服务。
 pub mod wifi;
 pub mod led;
-pub mod ble;
+// pub mod ble;
 
 /**
  * 系统初始化函数。

@@ -13,7 +13,7 @@ async function test() {
   //@ts-ignore
   let res = await navigator.bluetooth.requestDevice({
     filters: [{ name: "ESP32" }],
-    optionalServices: [0xff32],
+    optionalServices: [0x8848],
   });
   await res.gatt.connect();
   let services = await res.gatt.getPrimaryServices();
