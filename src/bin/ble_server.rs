@@ -1,5 +1,4 @@
 use std::sync::{ Arc, Mutex };
-use esp_idf_svc::hal::delay::FreeRtos;
 use rgb::RGB8;
 use rust_embedded_study::{ init, led::WS2812RMT };
 use esp32_nimble::{ utilities::BleUuid, BLEAdvertisementData, BLEDevice, NimbleProperties };
@@ -91,7 +90,5 @@ fn main() -> anyhow::Result<()> {
     // 打印蓝牙服务相关日志
     server.ble_gatts_show_local();
 
-    loop {
-        FreeRtos::delay_ms(10000);
-    }
+    Ok(())
 }
